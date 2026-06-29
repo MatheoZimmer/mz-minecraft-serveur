@@ -7,7 +7,7 @@
 ![Python](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)
 ![Platform](https://img.shields.io/badge/Platform-Windows-0078D6?logo=windows&logoColor=white)
 ![GUI](https://img.shields.io/badge/GUI-Tkinter-1f6feb)
-![License](https://img.shields.io/badge/License-MIT-green)
+![License](https://img.shields.io/badge/License-All%20rights%20reserved-red)
 
 *(English first — [version française plus bas](#version-française).)*
 
@@ -115,7 +115,9 @@ to the server comfortably hosts 8–10 players on Paper.
 
 ## License
 
-[MIT](LICENSE) — © 2026 Mathéo Zimmer.
+**All rights reserved** — © 2026 Mathéo Zimmer. This repository is published for review
+and portfolio purposes only; use, redistribution, and commercial use are not permitted
+without prior written consent. See [LICENSE](LICENSE).
 
 ---
 
@@ -168,4 +170,6 @@ Pensé pour un petit PC serveur (i5-10300 / 16 Go / GTX 1650). ~6 Go alloués su
 
 ### Licence
 
-[MIT](LICENSE) — © 2026 Mathéo Zimmer.
+**Tous droits réservés** — © 2026 Mathéo Zimmer. Dépôt publié à des fins de consultation et
+de portfolio uniquement ; la réutilisation, la redistribution et l'usage commercial ne sont
+pas autorisés sans accord écrit préalable. Voir [LICENSE](LICENSE).
