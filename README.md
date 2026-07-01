@@ -25,8 +25,14 @@ Everything else is downloaded on first launch into a folder next to the executab
 
 ## Features
 
+- **Guided setup wizard** — a beginner-friendly question/answer flow (server type, version,
+  world, game mode, access) that creates the server for you, plus an **advanced mode** with
+  the full tabbed interface.
+- **One-click remote play** — fully automated **playit.gg** tunnel: a single "Allow" click in
+  the browser, then the app fetches the key and **creates the Minecraft tunnel by itself** and
+  shows the address to share — no port forwarding, no manual setup on the playit site.
 - **Automatic Java** — downloads the correct Eclipse Temurin JRE for each Minecraft
-  version (Java 8 / 17 / 21), fully portable, nothing installed system-wide.
+  version (Java 8 / 17 / 21 / 25, incl. the new `26.x` versioning), fully portable.
 - **5 server types** — Vanilla, Paper, Fabric, Forge and NeoForge, with live version lists
   fetched from each project's official API.
 - **Server configuration UI** — seed, game mode, difficulty, hardcore, world type
@@ -37,8 +43,9 @@ Everything else is downloaded on first launch into a folder next to the executab
 - **Live admin panel** — op, kick, ban, whitelist, per-player game mode, time, weather,
   broadcasts and world saves while the server is running.
 - **World backups** — one-click timestamped `.zip` of the world.
-- **Networking** — shows LAN and public addresses with copy buttons, a port-forwarding
-  helper, and an optional **playit.gg** tunnel for remote play without router changes.
+- **Networking** — shows LAN and public addresses with copy buttons and a port-forwarding
+  helper (in addition to the automatic tunnel above).
+- **Modern UI** — dark "SaaS" theme, guided reactive steps, HiDPI-crisp, scrollable panels.
 - **Quality of life** — saved profile, one-click reload of an existing server, live player
   counter, auto-restart on crash, RAM detection with a safety guard, crash reporting.
 - **Single-file export** — `build.bat` produces one portable `.exe` via PyInstaller.
@@ -132,7 +139,14 @@ machine hôte et de le lancer. Java et le serveur sont téléchargés au premier
 
 ### Fonctionnalités
 
-- **Java automatique** (Eclipse Temurin, portable) selon la version de Minecraft.
+- **Assistant guidé** : un parcours question/réponse pour débutants (type de serveur,
+  version, monde, mode de jeu, accès) qui crée le serveur pour vous, plus un **mode avancé**
+  avec l'interface complète à onglets.
+- **Jeu à distance en un clic** : tunnel **playit.gg** entièrement automatisé — un seul clic
+  « Allow » dans le navigateur, puis l'application récupère la clé et **crée le tunnel toute
+  seule**, et affiche l'adresse à partager. Aucun port à ouvrir, aucune manipulation sur le site.
+- **Java automatique** (Eclipse Temurin, portable) selon la version de Minecraft
+  (Java 8 / 17 / 21 / 25, y compris le nouveau versioning `26.x`).
 - **5 types de serveur** : Vanilla, Paper, Fabric, Forge, NeoForge (listes de versions en
   direct depuis les API officielles).
 - **Configuration complète** : seed, mode de jeu, difficulté, hardcore, type de monde,
@@ -143,8 +157,10 @@ machine hôte et de le lancer. Java et le serveur sont téléchargés au premier
 - **Panneau admin en direct** : op, kick, ban, whitelist, mode de jeu par joueur, heure,
   météo, annonces et sauvegardes pendant la partie.
 - **Sauvegardes du monde** en `.zip` horodaté.
-- **Réseau** : adresses LAN et publique (avec boutons copier), aide au port-forwarding, et
-  tunnel **playit.gg** optionnel pour le jeu à distance sans toucher à la box.
+- **Réseau** : adresses LAN et publique (avec boutons copier) et aide au port-forwarding
+  (en plus du tunnel automatique ci-dessus).
+- **Interface moderne** : thème sombre « SaaS », étapes guidées réactives, rendu net (HiDPI),
+  panneaux défilables.
 - **Confort** : profil sauvegardé, rechargement d'un serveur existant en un clic, compteur
   de joueurs, redémarrage auto en cas de crash, détection de la RAM, rapport de crash.
 

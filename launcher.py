@@ -14,10 +14,12 @@ Profil sauvegarde (config_store) et rapport de crash auto (crash_reporter) inclu
 Lancer depuis les sources : python launcher.py   |   Compiler : build.bat
 """
 import collections
+import ctypes
 import os
 import re
 import shutil
 import threading
+import time
 import tkinter as tk
 import webbrowser
 from tkinter import filedialog, messagebox, scrolledtext, simpledialog, ttk
@@ -28,7 +30,7 @@ from core.java_manager import required_java
 from core.server_process import (ServerProcess, accept_eula, read_properties,
                                  update_properties)
 
-APP_VERSION = "0.3.2"
+APP_VERSION = "0.4.0"
 LOADERS = ["vanilla", "paper", "fabric", "forge", "neoforge"]
 DEFAULT_PORT = 25565
 DEFAULT_RAM = sysinfo.recommended_ram_mb()  # ~60% de la RAM, plafonne
@@ -47,22 +49,37 @@ LEVEL_TYPES = {
     "Amplifie": "minecraft:amplified",
 }
 
-# Couleurs du theme
-BG = "#1e1f26"
-PANEL = "#272935"
-FG = "#e6e6e6"
-ACCENT = "#3a7d2c"
-DANGER = "#a83232"
-CONSOLE_BG = "#0d0d0d"
-CONSOLE_FG = "#cfcfcf"
+# ==== Theme "dark SaaS" + accent emerald (look haut de gamme, pas gaming) ====
+BG = "#0F1620"          # fond appli (slate tres sombre)
+PANEL = "#18212E"       # cartes / panneaux
+PANEL2 = "#1F2A3A"      # surface elevee (hover, champs)
+BORDER = "#2A3849"      # bordures fines
+FG = "#E6EDF3"          # texte principal
+MUTED = "#8B9BB0"       # texte secondaire
+FIELD = "#1C2735"       # fond des champs
+ACCENT = "#10B981"      # emerald (boutons principaux, selection)
+ACCENT_HOVER = "#34D399"
+ACCENT_DARK = "#0E9E6E"
+DANGER = "#EF4444"
+DANGER_HOVER = "#F87171"
+NEUTRAL = "#222C3A"     # boutons secondaires
+NEUTRAL_HOVER = "#2C3848"
+CONSOLE_BG = "#0B1118"
+CONSOLE_FG = "#9FB4C8"
 
 
 class App:
     def __init__(self, root):
         self.root = root
         root.title("MZ Minecraft Server Launcher")
-        root.geometry("980x720")
-        root.minsize(880, 620)
+        # Taille adaptee a l'ecran avec de bonnes marges sur tous les cotes (l'appli
+        # ne touche jamais les bords). Le contenu des onglets est scrollable : rien
+        # ne peut sortir de l'ecran, meme sur un petit ecran.
+        sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
+        w, h = min(1040, sw - 160), min(780, sh - 200)
+        x, y = (sw - w) // 2, max(20, (sh - h) // 2 - 20)
+        root.geometry(f"{w}x{h}+{x}+{y}")
+        root.minsize(860, 560)
         root.configure(bg=BG)
 
         paths.ensure_dirs()
@@ -76,7 +93,7 @@ class App:
         self._user_stopped = False     # True si arret demande (evite l'auto-restart)
         self._players = set()          # joueurs connectes (compteur)
         self.playit_agent = None
-        self._playit_address = ""
+        self._playit_address = playit.saved_address()
         self._console_tail = collections.deque(maxlen=60)  # pour le rapport de crash
 
         self._setup_style()
@@ -84,7 +101,9 @@ class App:
         self._load_config()            # restaure le profil sauvegarde
         self._refresh_versions()
         self._refresh_existing()
+        self._update_guide()
         threading.Thread(target=self._load_network_info, daemon=True).start()
+        self._show_home()   # demarre sur l'ecran d'accueil (simplifie / avance)
 
     # ---------- Theme ----------
     def _setup_style(self):
@@ -94,116 +113,151 @@ class App:
         except tk.TclError:
             pass
         f = ("Segoe UI", 10)
-        field = "#333645"   # fond des champs (entries, combobox)
-        btn = "#3a3d4a"      # fond des boutons normaux
+        field = FIELD
         style.configure(".", background=BG, foreground=FG, font=f)
         style.configure("TFrame", background=BG)
         style.configure("Panel.TFrame", background=PANEL)
+        style.configure("Card.TFrame", background=PANEL)
         style.configure("TLabel", background=BG, foreground=FG, font=f)
         style.configure("Panel.TLabel", background=PANEL, foreground=FG, font=f)
-        style.configure("Title.TLabel", background=BG, foreground="#7fd35a",
+        style.configure("Title.TLabel", background=BG, foreground=FG,
                         font=("Segoe UI Semibold", 16))
-        style.configure("Hint.TLabel", background=PANEL, foreground="#9aa0ad",
-                        font=("Segoe UI", 9))
+        style.configure("Accent.TLabel", background=BG, foreground=ACCENT,
+                        font=("Segoe UI Semibold", 16))
+        style.configure("Muted.TLabel", background=BG, foreground=MUTED, font=("Segoe UI", 9))
+        style.configure("Hint.TLabel", background=PANEL, foreground=MUTED, font=("Segoe UI", 9))
 
-        # Boutons : couleurs explicites (sinon clam met un gris clair illisible)
-        style.configure("TButton", padding=7, font=f, background=btn, foreground=FG,
-                        borderwidth=0, focuscolor=btn)
+        # Boutons : neutres par defaut, accent emerald, danger rouge. Coins via padding.
+        style.configure("TButton", padding=(12, 8), font=f, background=NEUTRAL, foreground=FG,
+                        borderwidth=0, focuscolor=NEUTRAL, relief="flat")
         style.map("TButton",
-                  background=[("active", "#4a4e5e"), ("disabled", "#2a2c34")],
-                  foreground=[("disabled", "#6a6d77")])
-        style.configure("Accent.TButton", foreground="white", background=ACCENT)
+                  background=[("active", NEUTRAL_HOVER), ("disabled", "#1A2230")],
+                  foreground=[("disabled", "#566373")])
+        style.configure("Accent.TButton", font=("Segoe UI Semibold", 10),
+                        foreground="#06281C", background=ACCENT)
         style.map("Accent.TButton",
-                  background=[("active", "#2f6a23"), ("disabled", "#2a2c34")],
-                  foreground=[("disabled", "#6a6d77")])
+                  background=[("active", ACCENT_HOVER), ("disabled", "#1A2230")],
+                  foreground=[("disabled", "#566373")])
         style.configure("Danger.TButton", foreground="white", background=DANGER)
         style.map("Danger.TButton",
-                  background=[("active", "#8a2828"), ("disabled", "#2a2c34")],
-                  foreground=[("disabled", "#6a6d77")])
+                  background=[("active", DANGER_HOVER), ("disabled", "#1A2230")],
+                  foreground=[("disabled", "#566373")])
+        style.configure("Ghost.TButton", background=PANEL, foreground=MUTED)
+        style.map("Ghost.TButton",
+                  background=[("active", PANEL2)], foreground=[("active", FG)])
 
         style.configure("TCheckbutton", background=PANEL, foreground=FG, font=f)
         style.map("TCheckbutton", background=[("active", PANEL)],
-                  indicatorcolor=[("selected", ACCENT), ("!selected", field)])
+                  indicatorcolor=[("selected", ACCENT), ("!selected", field)],
+                  foreground=[("disabled", "#566373")])
 
-        style.configure("TNotebook", background=BG, borderwidth=0)
-        style.configure("TNotebook.Tab", background=PANEL, foreground=FG,
-                        padding=(16, 8), font=("Segoe UI", 10))
-        style.map("TNotebook.Tab", background=[("selected", ACCENT)],
-                  foreground=[("selected", "white")])
+        style.configure("TNotebook", background=BG, borderwidth=0, tabmargins=(0, 6, 0, 0))
+        style.configure("TNotebook.Tab", background=BG, foreground=MUTED,
+                        padding=(18, 9), font=("Segoe UI Semibold", 10), borderwidth=0)
+        style.map("TNotebook.Tab",
+                  background=[("selected", PANEL)],
+                  foreground=[("selected", ACCENT), ("active", FG)])
 
-        style.configure("TLabelframe", background=PANEL, bordercolor="#3a3d4a")
-        style.configure("TLabelframe.Label", background=PANEL, foreground="#9aa0ad")
+        style.configure("TLabelframe", background=PANEL, bordercolor=BORDER, borderwidth=1,
+                        relief="solid")
+        style.configure("TLabelframe.Label", background=PANEL, foreground=ACCENT,
+                        font=("Segoe UI Semibold", 10))
 
-        # Champs : fond sombre + texte clair, y compris en etat readonly/selected
-        # (c'est l'etat readonly qui causait l'overlay blanc sur les combobox).
+        # Etapes reactives : a venir (gris) / en cours (emerald) / fait (vert dim)
+        for name, bc, fc in (("Step", BORDER, MUTED),
+                             ("StepOn", ACCENT, ACCENT),
+                             ("StepDone", "#2F6B52", "#5FB591")):
+            style.configure(f"{name}.TLabelframe", background=PANEL, bordercolor=bc,
+                            borderwidth=1, relief="solid")
+            style.configure(f"{name}.TLabelframe.Label", background=PANEL, foreground=fc,
+                            font=("Segoe UI Semibold", 10))
+
+        style.configure("TSeparator", background=BORDER)
+
+        # Champs : fond sombre + texte clair, y compris en etat readonly/selected.
         style.configure("TCombobox", fieldbackground=field, background=field, foreground=FG,
-                        arrowcolor=FG, selectbackground=field, selectforeground=FG,
-                        borderwidth=0)
+                        arrowcolor=MUTED, selectbackground=field, selectforeground=FG,
+                        borderwidth=0, padding=4)
         style.map("TCombobox",
-                  fieldbackground=[("readonly", field), ("disabled", "#2a2c34")],
-                  foreground=[("readonly", FG), ("disabled", "#6a6d77")],
+                  fieldbackground=[("readonly", field), ("disabled", "#16202C")],
+                  foreground=[("readonly", FG), ("disabled", "#566373")],
                   selectbackground=[("readonly", field)],
                   selectforeground=[("readonly", FG)],
                   background=[("readonly", field), ("active", field)],
-                  arrowcolor=[("readonly", FG)])
+                  arrowcolor=[("readonly", MUTED), ("active", ACCENT)])
         style.configure("TEntry", fieldbackground=field, foreground=FG,
-                        insertcolor=FG, borderwidth=0)
+                        insertcolor=ACCENT, borderwidth=0, padding=5)
         style.configure("TSpinbox", fieldbackground=field, foreground=FG,
-                        background=field, arrowcolor=FG, borderwidth=0)
+                        background=field, arrowcolor=MUTED, borderwidth=0, padding=4)
         style.map("TSpinbox", fieldbackground=[("readonly", field)])
+        style.configure("Horizontal.TProgressbar", background=ACCENT, troughcolor=PANEL2,
+                        borderwidth=0)
 
         # Liste deroulante des combobox (popup natif, pas controle par le theme ttk)
-        self.root.option_add("*TCombobox*Listbox.background", field)
+        self.root.option_add("*TCombobox*Listbox.background", PANEL2)
         self.root.option_add("*TCombobox*Listbox.foreground", FG)
         self.root.option_add("*TCombobox*Listbox.selectBackground", ACCENT)
-        self.root.option_add("*TCombobox*Listbox.selectForeground", "white")
+        self.root.option_add("*TCombobox*Listbox.selectForeground", "#06281C")
 
     # ---------- Construction UI ----------
     def _build_ui(self):
-        header = ttk.Frame(self.root, padding=(14, 10))
+        header = ttk.Frame(self.root, padding=(16, 12))
         header.pack(fill="x")
-        ttk.Label(header, text="MZ Minecraft Server", style="Title.TLabel").pack(side="left")
-        self.head_status = ttk.Label(header, text="", foreground="#9aa0ad")
+        ttk.Label(header, text="MZ", style="Accent.TLabel").pack(side="left")
+        ttk.Label(header, text=" Minecraft Server", style="Title.TLabel").pack(side="left")
+        self.head_status = ttk.Label(header, text="", style="Muted.TLabel")
         self.head_status.pack(side="right")
-        self.players_lbl = ttk.Label(header, text="0 joueur", foreground="#9aa0ad")
+        self.players_lbl = ttk.Label(header, text="0 joueur", style="Muted.TLabel")
         self.players_lbl.pack(side="right", padx=14)
-        self.state_dot = ttk.Label(header, text="● arrete", foreground="#c8553d")
+        self.state_dot = ttk.Label(header, text="● arrete", foreground=DANGER, background=BG)
         self.state_dot.pack(side="right")
+        ttk.Button(header, text="☰ Menu", style="Ghost.TButton",
+                   command=self._show_home).pack(side="right", padx=(0, 16))
 
         self.nb = ttk.Notebook(self.root)
-        self.nb.pack(fill="x", padx=12)
         self._tab_server()
         self._tab_config()
         self._tab_mods()
         self._tab_admin()
 
-        # Console partagee (toujours visible)
-        cons_frame = ttk.Frame(self.root, padding=(12, 6))
-        cons_frame.pack(fill="both", expand=True)
-        ttk.Label(cons_frame, text="Console du serveur").pack(anchor="w")
-        self.console = scrolledtext.ScrolledText(
-            cons_frame, height=12, bg=CONSOLE_BG, fg=CONSOLE_FG,
-            insertbackground=CONSOLE_FG, font=("Consolas", 9), state="disabled",
-            relief="flat")
-        self.console.pack(fill="both", expand=True, pady=(2, 6))
-
-        cmd = ttk.Frame(cons_frame)
-        cmd.pack(fill="x")
-        self.cmd_var = tk.StringVar()
-        entry = ttk.Entry(cmd, textvariable=self.cmd_var)
-        entry.pack(side="left", fill="x", expand=True)
-        entry.bind("<Return>", lambda e: self._send_command())
-        ttk.Button(cmd, text="Envoyer", command=self._send_command).pack(side="left", padx=5)
-
+        # --- Bas de fenetre, epingle (toujours visible) : barre de statut tout en bas,
+        #     puis la console a hauteur FIXE. Le notebook prend le reste et son contenu
+        #     est scrollable -> rien ne peut sortir de l'ecran.
         self.status_var = tk.StringVar(value="Pret.")
-        ttk.Label(self.root, textvariable=self.status_var, relief="sunken",
-                  anchor="w", padding=5).pack(fill="x", side="bottom")
+        ttk.Label(self.root, textvariable=self.status_var, relief="flat",
+                  background=PANEL2, foreground=MUTED,
+                  anchor="w", padding=7).pack(fill="x", side="bottom")
+
+        cons_frame = ttk.Frame(self.root, padding=(14, 6))
+        cons_frame.pack(fill="x", side="bottom")
+        ttk.Label(cons_frame, text="Console du serveur", style="Muted.TLabel").pack(anchor="w")
+        self.console = scrolledtext.ScrolledText(
+            cons_frame, height=7, bg=CONSOLE_BG, fg=CONSOLE_FG,
+            insertbackground=CONSOLE_FG, font=("Consolas", 9), state="disabled",
+            relief="flat", borderwidth=0)
+        self.console.pack(fill="x", pady=(4, 2))
+
+        self.nb.pack(fill="both", expand=True, padx=14, pady=(2, 6))
 
     def _tab_server(self):
-        tab = ttk.Frame(self.nb, padding=14, style="Panel.TFrame")
-        self.nb.add(tab, text="  Serveur  ")
+        outer = ttk.Frame(self.nb, style="Panel.TFrame")
+        self.nb.add(outer, text="  Serveur  ")
+        tab = self._scroll_area(outer)
 
-        row = ttk.Frame(tab, style="Panel.TFrame")
+        # ----- Bandeau guide : dit en clair quoi faire MAINTENANT -----
+        self.guide_lbl = tk.Label(
+            tab, text="", bg="#11261E", fg="#CFF3E2",
+            font=("Segoe UI Semibold", 11), justify="left", anchor="w",
+            padx=16, pady=12, wraplength=920, highlightthickness=1,
+            highlightbackground=ACCENT_DARK, highlightcolor=ACCENT_DARK)
+        self.guide_lbl.pack(fill="x", pady=(0, 12))
+
+        # ===== ETAPE 1 : choisir le serveur =====
+        s1 = ttk.LabelFrame(tab, style="Step.TLabelframe", padding=12)
+        s1.pack(fill="x")
+        self._step1 = (s1, "Choisis ton serveur")
+
+        row = ttk.Frame(s1, style="Panel.TFrame")
         row.pack(fill="x")
         ttk.Label(row, text="Type :", style="Panel.TLabel").grid(row=0, column=0, sticky="w")
         self.loader_var = tk.StringVar(value="paper")
@@ -236,8 +290,8 @@ class App:
                   text=f"RAM PC : {total} Mo  -  max conseille : {sysinfo.max_safe_ram_mb()} Mo"
                   ).grid(row=1, column=4, padx=10, pady=(10, 0), sticky="w")
 
-        opts = ttk.Frame(tab, style="Panel.TFrame")
-        opts.pack(fill="x", pady=(12, 0))
+        opts = ttk.Frame(s1, style="Panel.TFrame")
+        opts.pack(fill="x", pady=(10, 0))
         self.eula_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(opts, text="J'accepte le CLUF Minecraft (obligatoire) - aka.ms/MinecraftEULA",
                         variable=self.eula_var).pack(side="left")
@@ -245,8 +299,28 @@ class App:
         ttk.Checkbutton(opts, text="Redemarrage auto si crash",
                         variable=self.autorestart_var).pack(side="left", padx=20)
 
-        actions = ttk.Frame(tab, style="Panel.TFrame")
-        actions.pack(fill="x", pady=6)
+        # Reprendre une partie deja installee (toujours dans l'etape 1)
+        existing = ttk.Frame(s1, style="Panel.TFrame")
+        existing.pack(fill="x", pady=(10, 0))
+        ttk.Label(existing, text="Ou reprends une partie deja installee :",
+                  style="Panel.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        self.existing_var = tk.StringVar()
+        self.existing_cb = ttk.Combobox(existing, textvariable=self.existing_var,
+                                        state="readonly", width=28)
+        self.existing_cb.grid(row=0, column=1, padx=(0, 8))
+        ttk.Button(existing, text="Charger", style="Accent.TButton",
+                   command=self._load_existing).grid(row=0, column=2, padx=2)
+        ttk.Button(existing, text="Rafraichir",
+                   command=self._refresh_existing).grid(row=0, column=3, padx=2)
+        ttk.Button(existing, text="Supprimer", style="Danger.TButton",
+                   command=self._delete_existing).grid(row=0, column=4, padx=2)
+
+        # ===== ETAPE 2 : installer puis demarrer =====
+        s2 = ttk.LabelFrame(tab, style="Step.TLabelframe", padding=12)
+        s2.pack(fill="x", pady=(12, 0))
+        self._step2 = (s2, "Installe puis demarre")
+        actions = ttk.Frame(s2, style="Panel.TFrame")
+        actions.pack(fill="x")
         self.prepare_btn = ttk.Button(actions, text="1) Installer / Preparer",
                                       command=self._on_prepare)
         self.prepare_btn.pack(side="left")
@@ -256,59 +330,490 @@ class App:
         self.stop_btn = ttk.Button(actions, text="Arreter", style="Danger.TButton",
                                    command=self._on_stop, state="disabled")
         self.stop_btn.pack(side="left")
-        ttk.Button(actions, text="Ouvrir le dossier",
-                   command=self._open_folder).pack(side="left", padx=6)
-        ttk.Button(actions, text="Rapports auto",
-                   command=self._config_mail).pack(side="left")
+        # Outils secondaires, discrets (style fantome)
+        ttk.Button(actions, text="Ouvrir le dossier", style="Ghost.TButton",
+                   command=self._open_folder).pack(side="right")
+        ttk.Button(actions, text="Rapports d'erreur", style="Ghost.TButton",
+                   command=self._config_mail).pack(side="right", padx=6)
 
-        # Serveurs deja installes : recharger une partie sans tout reparametrer
-        existing = ttk.LabelFrame(tab, text="Serveurs installes (relancer une partie)",
-                                  padding=10)
-        existing.pack(fill="x", pady=(12, 0))
-        self.existing_var = tk.StringVar()
-        self.existing_cb = ttk.Combobox(existing, textvariable=self.existing_var,
-                                        state="readonly", width=34)
-        self.existing_cb.grid(row=0, column=0, padx=(0, 8))
-        ttk.Button(existing, text="Charger", style="Accent.TButton",
-                   command=self._load_existing).grid(row=0, column=1, padx=2)
-        ttk.Button(existing, text="Rafraichir",
-                   command=self._refresh_existing).grid(row=0, column=2, padx=2)
-        ttk.Button(existing, text="Supprimer", style="Danger.TButton",
-                   command=self._delete_existing).grid(row=0, column=3, padx=2)
+        # ===== ETAPE 3 : inviter des joueurs =====
+        s3 = ttk.LabelFrame(tab, style="Step.TLabelframe", padding=12)
+        s3.pack(fill="x", pady=(12, 0))
+        self._step3 = (s3, "Inviter des joueurs")
 
-        # Bloc reseau avec boutons Copier
-        net = ttk.LabelFrame(tab, text="Acces / Reseau", padding=10)
-        net.pack(fill="x", pady=(14, 0))
-        ttk.Label(net, text="LAN (meme wifi) :").grid(row=0, column=0, sticky="w")
-        self.lan_lbl = ttk.Label(net, text="...", font=("Consolas", 10))
+        # Cas A : meme reseau local (le plus simple)
+        a = ttk.Frame(s3, style="Panel.TFrame")
+        a.pack(fill="x")
+        ttk.Label(a, text="Joueurs sur le meme reseau (Wi-Fi / LAN)  -  adresse a communiquer :",
+                  style="Panel.TLabel").grid(row=0, column=0, sticky="w")
+        self.lan_lbl = ttk.Label(a, text="...", font=("Consolas", 10))
         self.lan_lbl.grid(row=0, column=1, sticky="w", padx=8)
-        ttk.Button(net, text="Copier", width=8,
+        ttk.Button(a, text="Copier", width=8,
                    command=lambda: self._copy(self._addr(self._lan_ip))).grid(row=0, column=2)
 
-        ttk.Label(net, text="Distant (internet) :").grid(row=1, column=0, sticky="w", pady=(6, 0))
-        self.pub_lbl = ttk.Label(net, text="...", font=("Consolas", 10))
-        self.pub_lbl.grid(row=1, column=1, sticky="w", padx=8, pady=(6, 0))
-        ttk.Button(net, text="Copier", width=8,
-                   command=lambda: self._copy(self._addr(self._public_ip))).grid(row=1, column=2,
-                                                                                 pady=(6, 0))
-        ttk.Button(net, text="Aide acces distant (port forwarding)",
-                   command=self._show_remote_info).grid(row=2, column=0, columnspan=3,
-                                                        sticky="w", pady=(10, 0))
+        ttk.Separator(s3, orient="horizontal").pack(fill="x", pady=10)
 
-        # Tunnel playit.gg : jouer a distance sans toucher a la box
-        tun = ttk.LabelFrame(tab, text="Tunnel playit.gg (distant sans ouvrir de port)", padding=10)
-        tun.pack(fill="x", pady=(12, 0))
-        self.playit_btn = ttk.Button(tun, text="Demarrer le tunnel",
+        # Cas B : a distance (Internet) -> tunnel (recommande)
+        ttk.Label(s3, text="Joueurs a distance (Internet)  -  recommande : le tunnel "
+                           "(aucune configuration de box) :", style="Panel.TLabel").pack(anchor="w")
+        bt = ttk.Frame(s3, style="Panel.TFrame")
+        bt.pack(fill="x", pady=(6, 0))
+        ttk.Button(bt, text="Activer l'acces distant (configuration unique)",
+                   command=self._config_playit).pack(side="left")
+        self.playit_btn = ttk.Button(bt, text="Demarrer le tunnel",
                                      command=self._toggle_playit)
-        self.playit_btn.pack(side="left")
-        self.playit_addr = ttk.Label(tun, text="(arrete)", font=("Consolas", 10))
+        self.playit_btn.pack(side="left", padx=6)
+        self.playit_addr = ttk.Label(bt, text=self._playit_address or "(non active)",
+                                     font=("Consolas", 10))
         self.playit_addr.pack(side="left", padx=10)
-        ttk.Button(tun, text="Copier l'adresse", width=14,
+        ttk.Button(bt, text="Copier l'adresse", width=14,
                    command=self._copy_playit).pack(side="left")
 
+        # Alternative avancee : ouverture de port sur la box
+        adv = ttk.Frame(s3, style="Panel.TFrame")
+        adv.pack(fill="x", pady=(10, 0))
+        ttk.Label(adv, text="Avance (sans tunnel, ouverture de port) :",
+                  style="Hint.TLabel").pack(side="left")
+        self.pub_lbl = ttk.Label(adv, text="...", font=("Consolas", 9))
+        self.pub_lbl.pack(side="left", padx=8)
+        ttk.Button(adv, text="Copier", width=8,
+                   command=lambda: self._copy(self._addr(self._public_ip))).pack(side="left")
+        ttk.Button(adv, text="Aide (ouverture de port)",
+                   command=self._show_remote_info).pack(side="left", padx=6)
+
+    # ---------- Guide pas-a-pas (dit quoi faire selon l'etat) ----------
+    def _apply_steps(self):
+        """Fait reagir visuellement les 3 etapes : a venir (gris) / en cours (emerald) / fait (vert)."""
+        if not hasattr(self, "_step1"):
+            return
+        running = bool(self.server and self.server.is_running())
+        if running:
+            states = ["done", "done", "on"]
+        elif self.prepared:
+            states = ["done", "on", "idle"]
+        else:
+            states = ["on", "idle", "idle"]
+        style_map = {"idle": "Step", "on": "StepOn", "done": "StepDone"}
+        mark = {"idle": "", "on": "●  ", "done": "✓  "}
+        for i, (frame, title) in enumerate((self._step1, self._step2, self._step3)):
+            st = states[i]
+            frame.configure(style=f"{style_map[st]}.TLabelframe",
+                            text=f"  {mark[st]}Etape {i + 1}  -  {title}  ")
+
+    def _update_guide(self):
+        """Met a jour le bandeau guide selon l'etat reel (prepare / en marche / tunnel)."""
+        if not hasattr(self, "guide_lbl"):
+            return
+        self._apply_steps()
+        running = bool(self.server and self.server.is_running())
+        tunnel = bool(self.playit_agent and self.playit_agent.is_running())
+        lan = self._addr(self._lan_ip) if self._lan_ip not in ("...", "") else "(adresse LAN...)"
+
+        if not running and not self.prepared:
+            txt = ("Suivez les etapes dans l'ordre :\n"
+                   "Etape 1  -  choisir le Type et la Version, regler la RAM, accepter le CLUF "
+                   "(ou reprendre une partie installee).\n"
+                   "Etape 2  -  cliquer sur \"1) Installer / Preparer\" (telechargement automatique).")
+        elif not running and self.prepared:
+            txt = ("Serveur pret.  ->  Etape 2 : cliquer sur le bouton vert \"2) Demarrer\" "
+                   "pour lancer le serveur.")
+        elif running and tunnel and self._playit_address:
+            txt = ("Serveur en marche, tunnel actif.  ->  Etape 3 : adresses a communiquer aux joueurs :\n"
+                   f"    - meme reseau (LAN)  :  {lan}\n"
+                   f"    - a distance (Internet)  :  {self._playit_address}")
+        elif running and self._playit_address:
+            txt = ("Serveur en marche.  ->  Etape 3 : meme reseau = adresse "
+                   f"{lan}.  Pour l'acces a distance, cliquer sur \"Demarrer le tunnel\".")
+        else:  # running, tunnel jamais configure
+            txt = ("Serveur en marche.  ->  Etape 3 : les joueurs sur le meme reseau se "
+                   f"connectent a {lan}.\n"
+                   "Pour un acces a distance (Internet), cliquer sur \"Activer l'acces distant\".")
+        self.guide_lbl.configure(text=txt)
+
+    # ====================================================================
+    #  ECRAN D'ACCUEIL + ASSISTANT (mode simplifie) -- overlays par-dessus l'UI
+    # ====================================================================
+    def _overlay(self):
+        """Cree un calque plein ecran (cache l'UI avancee en dessous)."""
+        if getattr(self, "_ov", None) is not None:
+            self._ov.destroy()
+        self._ov = tk.Frame(self.root, bg=BG)
+        self._ov.place(relx=0, rely=0, relwidth=1, relheight=1)
+        return self._ov
+
+    def _enter_advanced(self):
+        """Ferme l'overlay -> revele l'interface complete (mode avance)."""
+        if getattr(self, "_ov", None) is not None:
+            self._ov.destroy()
+            self._ov = None
+
+    def _card(self, parent, icon, title, desc, cmd):
+        """Carte cliquable avec effet de survol (bordure emerald)."""
+        card = tk.Frame(parent, bg=PANEL, highlightthickness=1,
+                        highlightbackground=BORDER, highlightcolor=BORDER, cursor="hand2")
+        card.pack(fill="x", pady=5)
+        inner = tk.Frame(card, bg=PANEL)
+        inner.pack(fill="x", padx=16, pady=13)
+        tk.Label(inner, text=icon, bg=PANEL, fg=ACCENT,
+                 font=("Segoe UI", 17)).pack(side="left", padx=(0, 14))
+        chev = tk.Label(inner, text="›", bg=PANEL, fg=MUTED, font=("Segoe UI", 18))
+        chev.pack(side="right")
+        txt = tk.Frame(inner, bg=PANEL)
+        txt.pack(side="left", fill="x", expand=True)
+        ttl = tk.Label(txt, text=title, bg=PANEL, fg=FG,
+                       font=("Segoe UI Semibold", 12), anchor="w")
+        ttl.pack(fill="x")
+        if desc:
+            tk.Label(txt, text=desc, bg=PANEL, fg=MUTED, font=("Segoe UI", 9),
+                     anchor="w", justify="left", wraplength=560).pack(fill="x")
+
+        def on_enter(_):
+            card.configure(highlightbackground=ACCENT)
+            ttl.configure(fg=ACCENT)
+            chev.configure(fg=ACCENT)
+
+        def on_leave(_):
+            card.configure(highlightbackground=BORDER)
+            ttl.configure(fg=FG)
+            chev.configure(fg=MUTED)
+
+        def bind_all(w):
+            w.bind("<Enter>", on_enter)
+            w.bind("<Leave>", on_leave)
+            w.bind("<Button-1>", lambda e: cmd())
+            for ch in w.winfo_children():
+                bind_all(ch)
+
+        bind_all(card)
+        return card
+
+    def _show_home(self):
+        ov = self._overlay()
+        wrap = tk.Frame(ov, bg=BG)
+        wrap.place(relx=0.5, rely=0.46, anchor="center", width=720)
+        tk.Label(wrap, text="MZ", bg=BG, fg=ACCENT,
+                 font=("Segoe UI Semibold", 24)).pack(side="top", anchor="w")
+        tk.Label(wrap, text="Minecraft Server", bg=BG, fg=FG,
+                 font=("Segoe UI Semibold", 24)).pack(anchor="w")
+        tk.Label(wrap, text="Heberge ton serveur entre amis, en quelques clics.",
+                 bg=BG, fg=MUTED, font=("Segoe UI", 11)).pack(anchor="w", pady=(4, 26))
+        self.wiz_body = wrap
+        self._card(wrap, "✨", "Configuration simplifiee   (recommande)",
+                   "Reponds a quelques questions, on cree et configure le serveur pour toi.",
+                   self._start_wizard)
+        self._card(wrap, "⚙", "Mode avance",
+                   "Acces direct a l'interface complete (tous les reglages).",
+                   self._enter_advanced)
+
+    # ---------- Assistant pas-a-pas ----------
+    def _start_wizard(self):
+        self._wiz = {}
+        self._wiz_history = []
+        ov = self._overlay()
+        wrap = tk.Frame(ov, bg=BG)
+        wrap.place(relx=0.5, rely=0.5, anchor="center", width=720)
+        top = tk.Frame(wrap, bg=BG)
+        top.pack(fill="x")
+        self._wiz_step_lbl = tk.Label(top, text="", bg=BG, fg=MUTED, font=("Segoe UI", 9))
+        self._wiz_step_lbl.pack(side="left")
+        self._wiz_prog = ttk.Progressbar(wrap, style="Horizontal.TProgressbar",
+                                         maximum=100, length=720)
+        self._wiz_prog.pack(fill="x", pady=(6, 22))
+        self.wiz_body = tk.Frame(wrap, bg=BG)
+        self.wiz_body.pack(fill="x")
+        foot = tk.Frame(wrap, bg=BG)
+        foot.pack(fill="x", pady=(24, 0))
+        ttk.Button(foot, text="← Precedent", style="Ghost.TButton",
+                   command=self._wiz_back).pack(side="left")
+        ttk.Button(foot, text="Quitter l'assistant", style="Ghost.TButton",
+                   command=self._show_home).pack(side="right")
+        self._wiz_go(self._wiz_q_mode)
+
+    def _wiz_go(self, step):
+        self._wiz_history.append(step)
+        self._wiz_render(step)
+
+    def _wiz_back(self):
+        if len(self._wiz_history) > 1:
+            self._wiz_history.pop()
+            self._wiz_render(self._wiz_history[-1])
+        else:
+            self._show_home()
+
+    def _wiz_render(self, step):
+        n = len(self._wiz_history)
+        self._wiz_step_lbl.configure(text=f"Etape {n}")
+        self._wiz_prog["value"] = min(n * 16, 100)
+        for w in self.wiz_body.winfo_children():
+            w.destroy()
+        step()
+
+    def _wiz_title(self, title, subtitle=""):
+        tk.Label(self.wiz_body, text=title, bg=BG, fg=FG, anchor="w", justify="left",
+                 font=("Segoe UI Semibold", 18), wraplength=680).pack(fill="x", anchor="w")
+        if subtitle:
+            tk.Label(self.wiz_body, text=subtitle, bg=BG, fg=MUTED, anchor="w", justify="left",
+                     font=("Segoe UI", 10), wraplength=680).pack(fill="x", anchor="w", pady=(4, 0))
+        tk.Frame(self.wiz_body, bg=BG, height=14).pack()
+
+    def _wiz_pick(self, key, value, nxt):
+        self._wiz[key] = value
+        self._wiz_go(nxt)
+
+    def _wiz_q_mode(self):
+        self._wiz_title("Bienvenue \U0001F44B", "Que veux-tu faire ?")
+        self._card(self.wiz_body, "▶", "Creer un nouveau serveur",
+                   "Quelques questions et c'est pret.", lambda: self._wiz_go(self._wiz_q_type))
+        self._card(self.wiz_body, "↻", "Reprendre une partie",
+                   "Relancer un serveur deja installe.", lambda: self._wiz_go(self._wiz_q_existing))
+
+    def _wiz_q_existing(self):
+        self._wiz_title("Reprendre une partie", "Choisis le serveur a relancer.")
+        servers = paths.list_servers()
+        if not servers:
+            tk.Label(self.wiz_body, text="Aucun serveur installe pour l'instant.",
+                     bg=BG, fg=MUTED, font=("Segoe UI", 10)).pack(anchor="w", pady=(0, 8))
+            self._card(self.wiz_body, "▶", "Creer un nouveau serveur", "",
+                       lambda: self._wiz_go(self._wiz_q_type))
+            return
+        for name in servers:
+            self._card(self.wiz_body, "⬢", name, "", lambda n=name: self._wiz_load_existing(n))
+
+    def _wiz_load_existing(self, name):
+        self.existing_var.set(name)
+        self._enter_advanced()
+        self.nb.select(0)
+        self._load_existing()
+
+    def _wiz_q_type(self):
+        self._wiz_title("Quel type de serveur ?", "Choisis selon ce que tu veux faire.")
+        self._card(self.wiz_body, "▢", "Vanilla", "Le Minecraft d'origine, sans ajout.",
+                   lambda: self._wiz_pick("loader", "vanilla", self._wiz_q_version))
+        self._card(self.wiz_body, "✦", "Paper   (recommande)",
+                   "Optimise et fluide, supporte les plugins.",
+                   lambda: self._wiz_pick("loader", "paper", self._wiz_q_version))
+        self._card(self.wiz_body, "⚙", "Moddé (Fabric / Forge)",
+                   "De vrais mods : modpacks, machines, etc.",
+                   lambda: self._wiz_go(self._wiz_q_loader_mods))
+
+    def _wiz_q_loader_mods(self):
+        self._wiz_title("Quel chargeur de mods ?", "Fabric est plus leger et moderne.")
+        self._card(self.wiz_body, "◈", "Fabric", "Leger, mods modernes, mises a jour rapides.",
+                   lambda: self._wiz_pick("loader", "fabric", self._wiz_q_version))
+        self._card(self.wiz_body, "◉", "Forge", "Historique, gros mods et gros modpacks.",
+                   lambda: self._wiz_pick("loader", "forge", self._wiz_q_version))
+
+    def _wiz_q_version(self):
+        self._wiz_title("Quelle version de Minecraft ?", "On recommande la plus recente.")
+        loading = tk.Label(self.wiz_body, text="Chargement des versions...",
+                           bg=BG, fg=MUTED, font=("Segoe UI", 10))
+        loading.pack(anchor="w", pady=8)
+        loader = self._wiz["loader"]
+
+        def work():
+            try:
+                versions = downloaders.list_versions(loader, False)
+            except Exception:
+                versions = []
+            self.ui(lambda: self._wiz_version_ready(versions, loading))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _wiz_version_ready(self, versions, loading):
+        loading.destroy()
+        if not versions:
+            tk.Label(self.wiz_body, text="Impossible de charger les versions (reseau ?).",
+                     bg=BG, fg=DANGER, font=("Segoe UI", 10)).pack(anchor="w")
+            return
+        latest = versions[0]
+        self._card(self.wiz_body, "✦", f"Derniere version   ({latest})",
+                   "Le choix recommande.",
+                   lambda: self._wiz_pick("version", latest, self._wiz_q_world))
+        box = tk.Frame(self.wiz_body, bg=PANEL, highlightthickness=1, highlightbackground=BORDER)
+        box.pack(fill="x", pady=5)
+        inner = tk.Frame(box, bg=PANEL)
+        inner.pack(fill="x", padx=16, pady=13)
+        tk.Label(inner, text="Ou choisir :", bg=PANEL, fg=FG,
+                 font=("Segoe UI", 10)).pack(side="left")
+        var = tk.StringVar(value=latest)
+        ttk.Combobox(inner, textvariable=var, values=versions, state="readonly",
+                     width=18).pack(side="left", padx=10)
+        ttk.Button(inner, text="Continuer", style="Accent.TButton",
+                   command=lambda: self._wiz_pick("version", var.get(),
+                                                  self._wiz_q_world)).pack(side="left")
+
+    def _wiz_q_world(self):
+        self._wiz_title("Quel monde ?", "Aleatoire, ou une seed precise ?")
+        self._card(self.wiz_body, "\U0001F3B2", "Monde aleatoire", "Une carte au hasard, la surprise.",
+                   lambda: self._wiz_pick("seed", "", self._wiz_q_gamemode))
+        box = tk.Frame(self.wiz_body, bg=PANEL, highlightthickness=1, highlightbackground=BORDER)
+        box.pack(fill="x", pady=5)
+        inner = tk.Frame(box, bg=PANEL)
+        inner.pack(fill="x", padx=16, pady=13)
+        tk.Label(inner, text="J'ai une seed :", bg=PANEL, fg=FG,
+                 font=("Segoe UI", 10)).pack(side="left")
+        var = tk.StringVar()
+        ttk.Entry(inner, textvariable=var, width=20).pack(side="left", padx=10)
+        ttk.Button(inner, text="Continuer", style="Accent.TButton",
+                   command=lambda: self._wiz_pick("seed", var.get().strip(),
+                                                  self._wiz_q_gamemode)).pack(side="left")
+
+    def _wiz_q_gamemode(self):
+        self._wiz_title("Mode de jeu ?", "")
+        self._card(self.wiz_body, "⚔", "Survie", "Points de vie, faim, monstres.",
+                   lambda: self._wiz_pick("gamemode", "survival", self._wiz_q_remote))
+        self._card(self.wiz_body, "✨", "Creatif", "Ressources illimitees, vol, construction libre.",
+                   lambda: self._wiz_pick("gamemode", "creative", self._wiz_q_remote))
+
+    def _wiz_q_remote(self):
+        self._wiz_title("Avec qui vas-tu jouer ?", "")
+        self._card(self.wiz_body, "\U0001F3E0", "Sur mon reseau (meme Wi-Fi)",
+                   "Le plus simple : tout le monde est chez toi / sur le meme reseau.",
+                   lambda: self._wiz_pick("remote", False, self._wiz_summary))
+        self._card(self.wiz_body, "\U0001F310", "Avec des amis a distance (Internet)",
+                   "On preparera un acces distant securise (tunnel, sans toucher a ta box).",
+                   lambda: self._wiz_pick("remote", True, self._wiz_summary))
+
+    def _wiz_summary(self):
+        w = self._wiz
+        self._wiz_title("Recapitulatif", "Verifie, puis lance la creation.")
+        card = tk.Frame(self.wiz_body, bg=PANEL, highlightthickness=1, highlightbackground=BORDER)
+        card.pack(fill="x", pady=(0, 6))
+        rows = [
+            ("Type", w.get("loader", "-")),
+            ("Version", w.get("version", "-")),
+            ("Monde", f"seed « {w['seed']} »" if w.get("seed") else "aleatoire"),
+            ("Mode de jeu", w.get("gamemode", "survival")),
+            ("Joueurs", "a distance (Internet)" if w.get("remote") else "meme reseau (LAN)"),
+            ("RAM", f"{DEFAULT_RAM} Mo (auto)"),
+        ]
+        for k, v in rows:
+            r = tk.Frame(card, bg=PANEL)
+            r.pack(fill="x", padx=16, pady=4)
+            tk.Label(r, text=k, bg=PANEL, fg=MUTED, font=("Segoe UI", 10), width=14,
+                     anchor="w").pack(side="left")
+            tk.Label(r, text=str(v), bg=PANEL, fg=FG, font=("Segoe UI Semibold", 10),
+                     anchor="w").pack(side="left")
+        foot = tk.Frame(self.wiz_body, bg=PANEL, highlightthickness=1, highlightbackground=BORDER)
+        foot.pack(fill="x", pady=(8, 0))
+        self._wiz_eula = tk.BooleanVar(value=False)
+        ttk.Checkbutton(foot, text="J'accepte le CLUF Minecraft (obligatoire) - aka.ms/MinecraftEULA",
+                        variable=self._wiz_eula).pack(anchor="w", padx=14, pady=10)
+        ttk.Button(self.wiz_body, text="Creer le serveur   →", style="Accent.TButton",
+                   command=self._wiz_finish).pack(anchor="w", pady=(16, 0))
+
+    def _wiz_finish(self):
+        if not self._wiz_eula.get():
+            self._warn("Contrat de licence",
+                       "L'acceptation du CLUF Minecraft est obligatoire pour continuer.")
+            return
+        w = self._wiz
+        self.loader_var.set(w["loader"])
+        self.snapshot_var.set(False)
+        self.version_var.set(w["version"])
+        self.seed_var.set(w.get("seed", ""))
+        self.gamemode_var.set(w.get("gamemode", "survival"))
+        self.eula_var.set(True)
+        self._pending_remote = bool(w.get("remote"))
+        self._enter_advanced()
+        self.nb.select(0)
+        self._on_prepare()
+
+    def _modal(self, title, message, kind="info", ok="OK", cancel=None):
+        """Boite de dialogue modale stylee (dark + emerald). Renvoie True si 'ok'."""
+        colors = {"info": ACCENT, "ok": ACCENT, "warn": "#F59E0B", "error": DANGER}
+        icons = {"info": "i", "ok": "✓", "warn": "!", "error": "✕"}
+        accent = colors.get(kind, ACCENT)
+        top = tk.Toplevel(self.root)
+        top.title(title)
+        top.configure(bg=PANEL)
+        top.transient(self.root)
+        top.resizable(False, False)
+        tk.Frame(top, bg=accent, height=4).pack(fill="x")
+        body = tk.Frame(top, bg=PANEL)
+        body.pack(fill="both", expand=True, padx=24, pady=20)
+        head = tk.Frame(body, bg=PANEL)
+        head.pack(fill="x")
+        badge_fg = "#06281C" if kind in ("info", "ok") else "white"
+        tk.Label(head, text=icons.get(kind, "i"), bg=accent, fg=badge_fg,
+                 font=("Segoe UI Semibold", 12), width=3, height=1).pack(side="left")
+        tk.Label(head, text=title, bg=PANEL, fg=FG,
+                 font=("Segoe UI Semibold", 13)).pack(side="left", padx=12)
+        tk.Label(body, text=message, bg=PANEL, fg="#C7D2DE", font=("Segoe UI", 10),
+                 justify="left", wraplength=440).pack(anchor="w", pady=(14, 0))
+        btns = tk.Frame(body, bg=PANEL)
+        btns.pack(anchor="e", pady=(20, 0))
+        result = {"v": False}
+
+        def do_ok():
+            result["v"] = True
+            top.destroy()
+
+        if cancel:
+            ttk.Button(btns, text=cancel, style="Ghost.TButton",
+                       command=top.destroy).pack(side="right", padx=(8, 0))
+        ttk.Button(btns, text=ok, style="Accent.TButton", command=do_ok).pack(side="right")
+        top.bind("<Return>", lambda e: do_ok())
+        top.bind("<Escape>", lambda e: top.destroy())
+        top.update_idletasks()
+        w, h = top.winfo_width(), top.winfo_height()
+        rx, ry = self.root.winfo_rootx(), self.root.winfo_rooty()
+        rw, rh = self.root.winfo_width(), self.root.winfo_height()
+        top.geometry(f"+{rx + (rw - w) // 2}+{ry + (rh - h) // 3}")
+        top.grab_set()
+        self.root.wait_window(top)
+        return result["v"]
+
+    def _info(self, title, msg):
+        return self._modal(title, msg, "ok")
+
+    def _warn(self, title, msg):
+        return self._modal(title, msg, "warn")
+
+    def _error(self, title, msg):
+        return self._modal(title, msg, "error")
+
+    def _confirm(self, title, msg, ok="Confirmer", cancel="Annuler"):
+        return self._modal(title, msg, "info", ok=ok, cancel=cancel)
+
+    def _scroll_area(self, parent):
+        """Rend le contenu d'un onglet scrollable : rien ne sort jamais de l'ecran.
+
+        Renvoie un cadre interieur (deja padde) ou poser le contenu de l'onglet.
+        """
+        canvas = tk.Canvas(parent, bg=PANEL, highlightthickness=0, bd=0)
+        vsb = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        inner = ttk.Frame(canvas, style="Panel.TFrame", padding=16)
+        win = canvas.create_window((0, 0), window=inner, anchor="nw")
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(win, width=e.width))
+        inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+
+        def _wheel(e):
+            canvas.yview_scroll(int(-e.delta / 120), "units")
+
+        canvas.bind("<Enter>", lambda e: canvas.bind_all("<MouseWheel>", _wheel))
+        canvas.bind("<Leave>", lambda e: canvas.unbind_all("<MouseWheel>"))
+        return inner
+
+    def _hint_banner(self, parent, text):
+        """Petit bandeau en haut d'un onglet : explique a quoi il sert / quand l'utiliser."""
+        lbl = tk.Label(parent, text=text, bg=PANEL2, fg=MUTED,
+                       font=("Segoe UI", 9), justify="left", anchor="w",
+                       padx=14, pady=9, wraplength=920, highlightthickness=1,
+                       highlightbackground=BORDER, highlightcolor=BORDER)
+        lbl.pack(fill="x", pady=(0, 12))
+
     def _tab_config(self):
-        tab = ttk.Frame(self.nb, padding=14, style="Panel.TFrame")
-        self.nb.add(tab, text="  Configuration  ")
+        outer = ttk.Frame(self.nb, style="Panel.TFrame")
+        self.nb.add(outer, text="  Configuration  ")
+        tab = self._scroll_area(outer)
+        self._hint_banner(
+            tab, "Role : regler le monde (mode de jeu, difficulte, seed, MOTD, distance de vue...).\n"
+                 "Quand : avant de demarrer le serveur. Cliquer sur \"Appliquer maintenant\" "
+                 "pour enregistrer.")
 
         g = ttk.Frame(tab, style="Panel.TFrame")
         g.pack(fill="x")
@@ -322,7 +827,7 @@ class App:
         ttk.Entry(g, textvariable=self.seed_var, width=24).grid(row=0, column=1, sticky="w", pady=4)
 
         lbl("MOTD :", 0, 2)
-        self.motd_var = tk.StringVar(value="Serveur des potes")
+        self.motd_var = tk.StringVar(value="Mon serveur Minecraft")
         ttk.Entry(g, textvariable=self.motd_var, width=26).grid(row=0, column=3, sticky="w", pady=4)
 
         lbl("Mode de jeu :", 1, 0)
@@ -388,12 +893,16 @@ class App:
                    command=self._apply_config_now).pack(anchor="w", pady=(8, 0))
 
     def _tab_mods(self):
-        tab = ttk.Frame(self.nb, padding=14, style="Panel.TFrame")
-        self.nb.add(tab, text="  Mods / Plugins  ")
+        outer = ttk.Frame(self.nb, style="Panel.TFrame")
+        self.nb.add(outer, text="  Mods / Plugins  ")
+        tab = self._scroll_area(outer)
+        self._hint_banner(
+            tab, "Role : ajouter des mods / plugins (recherche Modrinth integree).\n"
+                 "Quand : apres avoir prepare un serveur Paper ou Fabric. Vanilla : aucun mod.")
 
         self.mods_info = ttk.Label(
             tab, style="Panel.TLabel",
-            text="Prepare d'abord un serveur. Paper -> plugins, Fabric -> mods, vanilla -> aucun.")
+            text="Preparez d'abord un serveur. Paper -> plugins, Fabric -> mods, Vanilla -> aucun.")
         self.mods_info.pack(anchor="w")
 
         self.mods_list = tk.Listbox(tab, height=12, bg=PANEL, fg=FG,
@@ -425,12 +934,13 @@ class App:
         self._modr_results = []  # slugs alignes avec modr_list
 
     def _tab_admin(self):
-        tab = ttk.Frame(self.nb, padding=14, style="Panel.TFrame")
-        self.nb.add(tab, text="  Admin  ")
-
-        ttk.Label(tab, style="Hint.TLabel",
-                  text="Ces actions envoient des commandes au serveur (doit etre demarre)."
-                  ).pack(anchor="w")
+        outer = ttk.Frame(self.nb, style="Panel.TFrame")
+        self.nb.add(outer, text="  Admin  ")
+        tab = self._scroll_area(outer)
+        self._hint_banner(
+            tab, "Role : envoyer des commandes au serveur en jeu (op, kick, donner un objet, "
+                 "regler l'heure ou la meteo, annonces...).\n"
+                 "Quand : uniquement lorsque le serveur est demarre.")
 
         pl = ttk.Frame(tab, style="Panel.TFrame")
         pl.pack(fill="x", pady=(10, 0))
@@ -484,6 +994,16 @@ class App:
         e.pack(side="left", fill="x", expand=True, padx=6)
         e.bind("<Return>", lambda ev: self._admin_say())
         ttk.Button(say, text="Annoncer (say)", command=self._admin_say).pack(side="left")
+
+        # Ligne de commande brute (deplacee depuis sous la console). Pour les habitues.
+        cmdf = ttk.LabelFrame(tab, text="Commande serveur (avance)", padding=8)
+        cmdf.pack(fill="x", pady=(10, 0))
+        self.cmd_var = tk.StringVar()
+        ce = ttk.Entry(cmdf, textvariable=self.cmd_var)
+        ce.pack(side="left", fill="x", expand=True, padx=(0, 6))
+        ce.bind("<Return>", lambda ev: self._send_command())
+        ttk.Button(cmdf, text="Envoyer", style="Accent.TButton",
+                   command=self._send_command).pack(side="left")
 
     # ---------- Helpers thread-safe ----------
     def ui(self, func):
@@ -570,14 +1090,15 @@ class App:
 
     def _apply_config_now(self):
         if not self.current_dir:
-            messagebox.showinfo("Config", "Prepare d'abord un serveur (onglet Serveur).")
+            self._info("Configuration",
+                       "Veuillez d'abord preparer un serveur (onglet Serveur).")
             return
         try:
             update_properties(self.current_dir, **self._collect_properties())
             self.set_status("Config ecrite dans server.properties.")
             self.log("Config appliquee. (Redemarre le serveur pour qu'elle prenne effet.)")
         except ValueError as e:
-            messagebox.showwarning("Config", f"Valeur invalide : {e}")
+            self._warn("Config", f"Valeur invalide : {e}")
 
     # ---------- Preparer ----------
     # ---------- Serveurs installes (recharger une partie) ----------
@@ -650,6 +1171,7 @@ class App:
                 self.set_status(f"Serveur charge : {name}")
                 self.ui(lambda: self.start_btn.configure(state="normal"))
                 self.ui(self._mods_refresh)
+                self.ui(self._update_guide)
             except Exception as e:
                 self.log(f"ERREUR chargement : {e}")
                 self.set_status(f"Erreur : {e}")
@@ -663,12 +1185,14 @@ class App:
         if not name:
             return
         if self.server and self.server.is_running():
-            messagebox.showwarning("Impossible", "Arrete le serveur avant de supprimer.")
+            self._warn("Action impossible",
+                       "Veuillez arreter le serveur avant de le supprimer.")
             return
-        if not messagebox.askyesno(
+        if not self._confirm(
                 "Supprimer le serveur",
-                f"Supprimer DEFINITIVEMENT '{name}' (monde, config, mods) ?\n"
-                "Cette action est irreversible. Pense a sauvegarder le monde avant."):
+                f"Supprimer definitivement « {name} » (monde, configuration, mods) ?\n\n"
+                "Cette action est irreversible. Pensez a sauvegarder le monde au prealable.",
+                ok="Supprimer", cancel="Annuler"):
             return
         sdir = os.path.join(paths.SERVERS_DIR, name)
         try:
@@ -681,18 +1205,18 @@ class App:
             self.existing_var.set("")
             self._refresh_existing()
         except OSError as e:
-            messagebox.showerror("Erreur", f"Suppression impossible :\n{e}")
+            self._error("Suppression impossible", f"La suppression a echoue :\n{e}")
 
     def _on_prepare(self):
         if not self.eula_var.get():
-            messagebox.showwarning(
-                "CLUF requis",
-                "Tu dois accepter le CLUF Minecraft pour heberger un serveur.")
+            self._warn(
+                "Contrat de licence",
+                "L'acceptation du CLUF Minecraft est obligatoire pour heberger un serveur.")
             return
         loader = self.loader_var.get()
         version = self.version_var.get()
         if not version:
-            messagebox.showwarning("Version", "Choisis une version.")
+            self._warn("Version manquante", "Veuillez selectionner une version.")
             return
 
         self.prepare_btn.configure(state="disabled")
@@ -723,6 +1247,15 @@ class App:
                 self.ui(lambda: self.start_btn.configure(state="normal"))
                 self.ui(self._mods_refresh)
                 self.ui(self._refresh_existing)
+                self.ui(self._update_guide)
+                if getattr(self, "_pending_remote", False):
+                    self._pending_remote = False
+                    self.ui(lambda: self._info(
+                        "Jouer a distance",
+                        "Le serveur est pret.\n\nPour jouer avec des amis par Internet :\n"
+                        "  1. demarrer le serveur (Etape 2) ;\n"
+                        "  2. onglet Serveur, Etape 3, « Activer l'acces distant ».\n\n"
+                        "Pour jouer sur le meme reseau, aucune action supplementaire n'est requise."))
             except Exception as e:
                 self.log(f"ERREUR : {e}")
                 self.set_status(f"Erreur : {e}")
@@ -738,17 +1271,18 @@ class App:
         try:
             ram = int(self.ram_var.get())
         except ValueError:
-            messagebox.showwarning("RAM", "RAM invalide (nombre de Mo attendu).")
+            self._warn("RAM invalide", "Veuillez saisir un nombre de Mo valide.")
             return
         safe = sysinfo.max_safe_ram_mb()
-        if ram > safe and not messagebox.askyesno(
+        if ram > safe and not self._confirm(
                 "RAM elevee",
-                f"{ram} Mo depasse le max conseille ({safe} Mo).\nDemarrer quand meme ?"):
+                f"{ram} Mo depasse le maximum conseille ({safe} Mo).\nDemarrer malgre tout ?",
+                ok="Demarrer", cancel="Annuler"):
             return
         try:
             update_properties(self.current_dir, **self._collect_properties())
         except ValueError as e:
-            messagebox.showwarning("Valeur", f"Valeur invalide : {e}")
+            self._warn("Valeur invalide", f"Reglage invalide : {e}")
             return
 
         args = downloaders.launch_args(self.loader_var.get(), self.java_exe,
@@ -766,6 +1300,7 @@ class App:
         self.state_dot.configure(text="● en marche", foreground="#7fd35a")
         self.set_status(f"Serveur lance sur le port {self.port_var.get()}.")
         self.log(f">>> Demarrage ({ram} Mo de RAM) <<<")
+        self._update_guide()
 
     def _on_server_exit(self, code):
         self.log(f">>> Serveur arrete (code {code}) <<<")
@@ -776,6 +1311,7 @@ class App:
         self.ui(lambda: self.stop_btn.configure(state="disabled"))
         self.ui(lambda: self.start_btn.configure(state="normal"))
         self.ui(lambda: self.prepare_btn.configure(state="normal"))
+        self.ui(self._update_guide)
         # Redemarrage auto si crash (code != 0) et arret non demande par l'utilisateur
         if self.autorestart_var.get() and code != 0 and not self._user_stopped:
             self.log(">>> Crash detecte : redemarrage automatique dans 5s... <<<")
@@ -831,11 +1367,11 @@ class App:
 
     def _backup_world(self):
         if not self.current_dir:
-            messagebox.showinfo("Sauvegarde", "Prepare d'abord un serveur.")
+            self._info("Sauvegarde", "Veuillez d'abord preparer un serveur.")
             return
         world = os.path.join(self.current_dir, "world")
         if not os.path.isdir(world):
-            messagebox.showinfo("Sauvegarde", "Pas encore de monde a sauvegarder "
+            self._info("Sauvegarde", "Pas encore de monde a sauvegarder "
                                               "(demarre le serveur au moins une fois).")
             return
         if self.server and self.server.is_running():
@@ -873,7 +1409,8 @@ class App:
         d = self._mods_dir()
         self.mods_list.delete(0, "end")
         if d is None:
-            self.mods_info.configure(text="Vanilla : pas de mods/plugins. Choisis paper ou fabric.")
+            self.mods_info.configure(
+                text="Vanilla : aucun mod / plugin possible. Choisissez Paper ou Fabric.")
             return
         os.makedirs(d, exist_ok=True)
         self.mods_info.configure(text=f"Dossier : {d}")
@@ -884,7 +1421,7 @@ class App:
     def _mods_add(self):
         d = self._mods_dir()
         if d is None:
-            messagebox.showinfo("Mods", "Prepare d'abord un serveur paper ou fabric.")
+            self._info("Mods / Plugins", "Veuillez d'abord preparer un serveur Paper ou Fabric.")
             return
         files = filedialog.askopenfilenames(title="Choisir des .jar",
                                             filetypes=[("Java archive", "*.jar")])
@@ -913,7 +1450,7 @@ class App:
     def _mods_open(self):
         d = self._mods_dir()
         if d is None:
-            messagebox.showinfo("Mods", "Prepare d'abord un serveur paper ou fabric.")
+            self._info("Mods / Plugins", "Veuillez d'abord preparer un serveur Paper ou Fabric.")
             return
         os.makedirs(d, exist_ok=True)
         try:
@@ -950,7 +1487,7 @@ class App:
     def _modr_install(self):
         d = self._mods_dir()
         if d is None:
-            messagebox.showinfo("Modrinth", "Prepare d'abord un serveur paper/fabric/forge.")
+            self._info("Modrinth", "Veuillez d'abord preparer un serveur Paper, Fabric ou Forge.")
             return
         sel = self.modr_list.curselection()
         if not sel:
@@ -976,37 +1513,111 @@ class App:
     # ---------- playit.gg ----------
     def _toggle_playit(self):
         if self.playit_agent and self.playit_agent.is_running():
+            self._user_stopped_playit = True
             self.playit_agent.stop()
             self.playit_btn.configure(text="Demarrer le tunnel")
-            self.playit_addr.configure(text="(arrete)")
+            self._update_guide()
             return
+
+        if not playit.is_configured():
+            self._info(
+                "Acces distant non configure",
+                "L'acces distant n'est pas encore configure.\n\n"
+                "Cliquez sur « Activer l'acces distant » pour le mettre en place.")
+            return
+
+        secret = playit.load_config().get("secret", "")
+        self._user_stopped_playit = False
 
         def work():
             try:
                 playit.ensure_agent(log=self.log)
-                self.log("Demarrage de playit.gg (suis le lien affiche pour configurer)...")
+                self.log("Demarrage du tunnel playit.gg...")
                 self.playit_agent = playit.PlayitAgent(
-                    on_output=self.log, on_url=self._on_playit_url,
-                    on_exit=lambda c: self.log(f">>> playit arrete (code {c}) <<<"))
-                self.playit_agent.start()
+                    on_output=self.log, on_exit=self._on_playit_exit)
+                self.playit_agent.start(secret)
                 self.ui(lambda: self.playit_btn.configure(text="Arreter le tunnel"))
+                self.ui(self._update_guide)
+                if self._playit_address:
+                    self.log(f"Adresse a donner aux joueurs : {self._playit_address}")
             except Exception as e:
                 self.log(f"Erreur playit : {e}")
                 self.set_status(f"Erreur playit : {e}")
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _on_playit_url(self, url):
-        # Lien de configuration/claim : on l'ouvre dans le navigateur
-        if "claim" in url or "login" in url or "setup" in url:
-            webbrowser.open(url)
-        self._playit_address = url
-        self.ui(lambda: self.playit_addr.configure(text=url))
-        self.log(f"playit : {url}")
+    def _on_playit_exit(self, code):
+        self.log(f">>> playit arrete (code {code}) <<<")
+        self.ui(lambda: self.playit_btn.configure(text="Demarrer le tunnel"))
+        self.ui(self._update_guide)
+        # Code != 0 sans arret manuel = probleme (secret invalide le plus souvent)
+        if code != 0 and not getattr(self, "_user_stopped_playit", False):
+            self.ui(lambda: self._error(
+                "Acces distant interrompu",
+                "Le tunnel s'est arrete de maniere inattendue.\n\n"
+                "Cause la plus probable : la cle d'acces est invalide ou expiree.\n"
+                "Relancez « Activer l'acces distant » pour en regenerer une."))
+
+    def _config_playit(self):
+        if not self._confirm(
+                "Activer l'acces distant",
+                "La configuration est entierement automatique : elle permet de jouer a "
+                "distance sans ouvrir de port sur la box.\n\n"
+                "Une page playit.gg va s'ouvrir :\n"
+                "  1. se connecter (ou creer un compte, puis verifier l'e-mail) ;\n"
+                "  2. cliquer sur « Allow » pour autoriser l'application.\n\n"
+                "L'application recupere ensuite la cle et cree le tunnel automatiquement.",
+                ok="Continuer", cancel="Annuler"):
+            return
+        self._playit_cancel = False
+        try:
+            local_port = int(self.port_var.get())
+        except (TypeError, ValueError):
+            local_port = 25565
+
+        def work():
+            try:
+                # 1) Autorisation playit (le seul clic manuel) -> secret key.
+                secret = playit.claim_interactive(
+                    self.log, lambda: getattr(self, "_playit_cancel", False))
+                # 2) Telecharge l'agent et DEMARRE le daemon (il s'enregistre + servira
+                #    le tunnel). Le tunnel ne peut etre cree qu'apres ce demarrage.
+                playit.ensure_agent(log=self.log)
+                if self.playit_agent and self.playit_agent.is_running():
+                    self._user_stopped_playit = True
+                    self.playit_agent.stop()
+                    time.sleep(1)
+                self._user_stopped_playit = False
+                self.playit_agent = playit.PlayitAgent(
+                    on_output=self.log, on_exit=self._on_playit_exit)
+                self.playit_agent.start(secret)
+                self.ui(lambda: self.playit_btn.configure(text="Arreter le tunnel"))
+                # 3) Cree (ou reutilise) le tunnel Minecraft et recupere l'adresse.
+                self.log("Agent demarre, configuration du tunnel Minecraft...")
+                address = playit.ensure_tunnel(secret, local_port, self.log)
+                playit.save_config(secret, address)
+                self._playit_address = address
+                self.ui(lambda: self.playit_addr.configure(text=address))
+                self.ui(self._update_guide)
+                self.ui(lambda: self._info(
+                    "Acces distant pret",
+                    "Configuration terminee, le tunnel est actif.\n\n"
+                    f"Adresse a communiquer aux joueurs (dans Minecraft) :\n\n    {address}\n\n"
+                    "Demarrez le serveur s'il ne l'est pas : le tunnel suit automatiquement."))
+            except Exception as e:
+                msg = str(e)  # capture avant que Python ne supprime 'e' a la sortie du except
+                self.log(f"Echec config playit : {msg}")
+                self.ui(lambda: self._error(
+                    "Configuration de l'acces distant",
+                    f"La configuration automatique a echoue :\n\n{msg}"))
+
+        threading.Thread(target=work, daemon=True).start()
 
     def _copy_playit(self):
         if self._playit_address:
             self._copy(self._playit_address)
+        else:
+            self.set_status("Aucune adresse playit (clique sur 'Configurer').")
 
     # ---------- Profil (config persistante) ----------
     def _gather_state(self):
@@ -1070,24 +1681,25 @@ class App:
         self._lan_ip = netinfo.lan_ip()
         self.ui(lambda: self.lan_lbl.configure(text=self._addr(self._lan_ip)))
         self.ui(lambda: self.head_status.configure(text=f"LAN {self._lan_ip}"))
+        self.ui(self._update_guide)
         self._public_ip = netinfo.public_ip()
         self.ui(lambda: self.pub_lbl.configure(text=self._addr(self._public_ip)))
 
     def _show_remote_info(self):
         port = self.port_var.get()
         msg = (
-            "=== JOUER EN LAN (meme reseau / wifi) ===\n"
-            f"Les potes se connectent a :  {self._lan_ip}:{port}\n\n"
-            "=== JOUER A DISTANCE (internet) ===\n"
+            "=== Jouer sur le meme reseau (LAN / Wi-Fi) ===\n"
+            f"Adresse a communiquer aux joueurs :  {self._lan_ip}:{port}\n\n"
+            "=== Jouer a distance (Internet) ===\n"
             f"IP publique :  {self._public_ip}:{port}\n\n"
-            f"Pour l'exterieur, ouvre le port {port} (TCP) sur ta box :\n"
+            f"Pour un acces exterieur, ouvrir le port {port} (TCP) sur la box :\n"
             "  1. Interface de la box (souvent http://192.168.1.1)\n"
             "  2. Section 'NAT/PAT' ou 'Redirection de ports'\n"
-            f"  3. Redirige le port {port} (TCP) vers {self._lan_ip}\n\n"
-            "Alternative sans toucher a la box : un tunnel comme playit.gg.\n"
-            "Autorise aussi java.exe dans le pare-feu Windows."
+            f"  3. Rediriger le port {port} (TCP) vers {self._lan_ip}\n\n"
+            "Alternative sans configuration de box : le tunnel (bouton \"Activer l'acces distant\").\n"
+            "Penser aussi a autoriser java.exe dans le pare-feu Windows."
         )
-        messagebox.showinfo("Acces au serveur", msg)
+        self._info("Acces au serveur", msg)
 
     def _open_folder(self):
         target = self.current_dir or paths.DATA_DIR
@@ -1125,12 +1737,12 @@ class App:
 
     def _config_mail(self):
         configured = " (deja configure)" if mailer.is_configured() else ""
-        if not messagebox.askyesno(
-                "Envoi auto des rapports" + configured,
-                "Pour ENVOYER les rapports de crash automatiquement (sans clic), il faut "
-                "un compte Gmail + un 'mot de passe d'application' (16 caracteres).\n\n"
-                "Cree-le sur https://myaccount.google.com/apppasswords (2FA requise).\n\n"
-                "Continuer la configuration ?"):
+        if not self._confirm(
+                "Envoi automatique des rapports" + configured,
+                "Pour envoyer les rapports d'erreur automatiquement, un compte Gmail et un "
+                "« mot de passe d'application » (16 caracteres) sont necessaires.\n\n"
+                "Il se cree sur https://myaccount.google.com/apppasswords (2FA requise).",
+                ok="Configurer", cancel="Annuler"):
             return
         address = simpledialog.askstring(
             "Adresse Gmail", "Adresse Gmail qui ENVOIE les rapports :",
@@ -1142,7 +1754,9 @@ class App:
         if not pwd:
             return
         mailer.save_creds(address.strip(), pwd)
-        if messagebox.askyesno("Test", "Identifiants enregistres.\nEnvoyer un mail de test ?"):
+        if self._confirm("Identifiants enregistres",
+                         "Envoyer un e-mail de test pour verifier la configuration ?",
+                         ok="Envoyer le test", cancel="Plus tard"):
             self._test_mail()
 
     def _test_mail(self):
@@ -1150,16 +1764,35 @@ class App:
             try:
                 mailer.send(crash_reporter.DEV_EMAIL, "MZ Launcher - test",
                             "Ceci est un mail de test : l'envoi auto des rapports fonctionne.")
-                self.ui(lambda: messagebox.showinfo("Test", "Mail de test envoye !"))
+                self.ui(lambda: self._info("Test reussi", "L'e-mail de test a bien ete envoye."))
             except Exception as e:
-                self.ui(lambda: messagebox.showerror(
-                    "Echec", f"Envoi impossible :\n{e}\n\n"
-                             "Verifie l'adresse et le mot de passe d'application."))
+                self.ui(lambda: self._error(
+                    "Echec de l'envoi",
+                    f"L'envoi a echoue :\n{e}\n\n"
+                    "Verifiez l'adresse et le mot de passe d'application."))
         threading.Thread(target=work, daemon=True).start()
 
 
+def _enable_hidpi():
+    """Rend l'appli nette sur les ecrans HiDPI (sinon Windows l'etire -> flou)."""
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)  # System DPI aware
+    except Exception:
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
+
+
 def main():
+    _enable_hidpi()
     root = tk.Tk()
+    # Adapte la densite de Tk au DPI reel (textes nets, tailles correctes).
+    try:
+        dpi = ctypes.windll.user32.GetDpiForSystem()
+        root.tk.call("tk", "scaling", dpi / 72.0)
+    except Exception:
+        pass
     app = App(root)
 
     # Rapport de crash : envoi auto (SMTP) si configure, sinon ouverture du client mail.
@@ -1181,10 +1814,13 @@ def main():
 
     def on_close():
         if app.server and app.server.is_running():
-            if not messagebox.askyesno("Quitter", "Le serveur tourne. L'arreter et quitter ?"):
+            if not app._confirm("Quitter l'application",
+                                 "Le serveur est en cours d'execution. L'arreter et quitter ?",
+                                 ok="Arreter et quitter", cancel="Annuler"):
                 return
             app.server.kill()
         if app.playit_agent and app.playit_agent.is_running():
+            app._user_stopped_playit = True  # evite la popup d'erreur a la fermeture
             app.playit_agent.stop()
         app._save_config()  # memorise le profil pour la prochaine fois
         root.destroy()

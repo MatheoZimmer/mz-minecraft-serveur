@@ -19,11 +19,12 @@ ADOPTIUM = (
 def required_java(mc_version):
     """Renvoie la version de Java (int) necessaire pour une version Minecraft donnee.
 
+    - nouveau schema 2026+ (ex. 26.2)  -> Java 25 (class file 69)
     - 1.20.5+ et 1.21+  -> Java 21
     - 1.18 a 1.20.4     -> Java 17
     - 1.17.x            -> Java 17 (16 mini, 17 marche)
     - 1.16 et avant     -> Java 8
-    Versions inconnues / snapshots -> 21 (le plus recent).
+    Versions inconnues / snapshots -> 25 (le plus recent).
     """
     core = mc_version.split("-")[0]  # enleve un eventuel suffixe (ex: pre-release)
     parts = core.split(".")
@@ -32,10 +33,10 @@ def required_java(mc_version):
         minor = int(parts[1]) if len(parts) > 1 else 0
         patch = int(parts[2]) if len(parts) > 2 else 0
     except ValueError:
-        return 21  # snapshot ou format inattendu : on prend le plus recent
+        return 25  # snapshot ou format inattendu : on prend le plus recent
 
     if major != 1:
-        return 21
+        return 25  # nouveau schema de versioning (2026+) : compile pour Java 25
     if minor >= 21:
         return 21
     if minor == 20:

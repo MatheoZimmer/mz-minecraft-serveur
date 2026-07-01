@@ -2,6 +2,29 @@
 
 Format : chaque version liste les changements. Date au format AAAA-MM-JJ.
 
+## [0.4.0] — 2026-07-01
+Refonte de l'expérience + accès distant 100 % automatique.
+
+### Ajouté
+- **Écran d'accueil** au lancement : choix entre **Configuration simplifiée** (assistant
+  question/réponse qui guide pas à pas : type de serveur, version, monde, mode de jeu,
+  accès) et **Mode avancé** (interface complète). Bouton **☰ Menu** pour revenir à l'accueil.
+- **Étapes guidées et réactives** (onglet Serveur) : l'étape en cours s'allume, les étapes
+  terminées passent en ✓, un bandeau indique quoi faire à chaque instant.
+
+### Changé
+- **Accès distant (playit.gg) entièrement automatisé** : plus aucune manipulation sur le site.
+  Un seul clic « Allow » dans le navigateur, puis l'application récupère la clé et **crée le
+  tunnel Minecraft toute seule** via l'API playit ; l'adresse à partager s'affiche directement.
+- **Refonte visuelle** : thème sombre « SaaS » + accent émeraude, boîtes de dialogue stylées
+  (fini les popups système), textes professionnels, effets de survol.
+- **Fenêtre nette (HiDPI)** et adaptée à l'écran ; **onglets défilables** (plus rien hors champ).
+- La saisie de commande brute passe dans l'onglet **Admin**.
+
+### Corrigé
+- **Java 25** requis pour les versions Minecraft du nouveau schéma (`26.x`, class file 69) :
+  le mapping téléchargeait Java 21 → serveur qui ne démarrait pas (`UnsupportedClassVersionError`).
+
 ## [0.3.2] — 2026-06-30
 ### Ajouté
 - **Serveurs installés** (onglet Serveur) : liste déroulante de tes serveurs existants +
