@@ -30,7 +30,7 @@ from core.java_manager import required_java
 from core.server_process import (ServerProcess, accept_eula, read_properties,
                                  update_properties)
 
-APP_VERSION = "0.4.0"
+APP_VERSION = "0.4.1"
 LOADERS = ["vanilla", "paper", "fabric", "forge", "neoforge"]
 DEFAULT_PORT = 25565
 DEFAULT_RAM = sysinfo.recommended_ram_mb()  # ~60% de la RAM, plafonne
@@ -330,6 +330,8 @@ class App:
         self.stop_btn = ttk.Button(actions, text="Arreter", style="Danger.TButton",
                                    command=self._on_stop, state="disabled")
         self.stop_btn.pack(side="left")
+        ttk.Button(actions, text="Liberer le port", style="Ghost.TButton",
+                   command=self._free_port).pack(side="left", padx=6)
         # Outils secondaires, discrets (style fantome)
         ttk.Button(actions, text="Ouvrir le dossier", style="Ghost.TButton",
                    command=self._open_folder).pack(side="right")
@@ -1285,6 +1287,27 @@ class App:
             self._warn("Valeur invalide", f"Reglage invalide : {e}")
             return
 
+        # Garde-fou : port deja occupe (un serveur tourne peut-etre deja, ou un
+        # demarrage precedent ne s'est pas ferme) -> evite un crash "FAILED TO BIND".
+        port = self.port_var.get()
+        if netinfo.port_in_use(port):
+            if not self._confirm(
+                    "Port deja utilise",
+                    f"Le port {port} est deja utilise : un serveur tourne probablement deja "
+                    "(ou un demarrage precedent ne s'est pas ferme correctement).\n\n"
+                    "Liberer le port et demarrer malgre tout ?",
+                    ok="Liberer et demarrer", cancel="Annuler"):
+                return
+            self.log(f"Liberation du port {port}...")
+            netinfo.free_port(port)
+            time.sleep(1)
+            if netinfo.port_in_use(port):
+                self._warn(
+                    "Port toujours occupe",
+                    f"Le port {port} est encore utilise.\n\n"
+                    "Fermez le programme qui l'occupe, ou choisissez un autre port (Etape 1).")
+                return
+
         args = downloaders.launch_args(self.loader_var.get(), self.java_exe,
                                        self.current_dir, ram)
         self._user_stopped = False
@@ -1326,6 +1349,48 @@ class App:
             self._user_stopped = True
             self.log(">>> Arret en cours (sauvegarde du monde)... <<<")
             self.server.stop()
+
+    def _free_port(self):
+        """Libere le port du serveur : arret propre du notre, puis kill de ce qui reste."""
+        port = self.port_var.get()
+        if not netinfo.port_in_use(port):
+            self._info("Port libre", f"Le port {port} est deja libre. Aucune action necessaire.")
+            return
+        if not self._confirm(
+                "Liberer le port",
+                f"Le port {port} est utilise. Cette action va ARRETER le programme qui "
+                "l'occupe (le serveur en cours, ou un serveur reste ouvert).\n\n"
+                "Attention : un serveur non sauvegarde peut perdre les dernieres minutes de jeu.\n\n"
+                "Continuer ?",
+                ok="Liberer le port", cancel="Annuler"):
+            return
+
+        def work():
+            # 1) Si c'est NOTRE serveur, on tente un arret propre (sauvegarde du monde).
+            if self.server and self.server.is_running():
+                self._user_stopped = True
+                self.log(">>> Arret du serveur pour liberer le port... <<<")
+                self.server.stop()
+                for _ in range(10):
+                    if not (self.server and self.server.is_running()):
+                        break
+                    time.sleep(1)
+            # 2) On force la liberation de ce qui occupe encore le port.
+            if netinfo.port_in_use(port):
+                self.log(f"Liberation forcee du port {port}...")
+                netinfo.free_port(port)
+                time.sleep(1)
+            if netinfo.port_in_use(port):
+                self.ui(lambda: self._warn(
+                    "Port toujours occupe",
+                    f"Le port {port} est encore utilise. Reessayez, ou redemarrez le PC."))
+            else:
+                self.log(f"Port {port} libere.")
+                self.ui(lambda: self._info(
+                    "Port libere", f"Le port {port} est maintenant libre. Vous pouvez demarrer."))
+            self.ui(self._update_guide)
+
+        threading.Thread(target=work, daemon=True).start()
 
     def _send_command(self):
         cmd = self.cmd_var.get().strip()

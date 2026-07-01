@@ -2,6 +2,15 @@
 
 Format : chaque version liste les changements. Date au format AAAA-MM-JJ.
 
+## [0.4.1] — 2026-07-01
+### Ajouté
+- **Garde-fou « port déjà utilisé »** : au démarrage, si le port du serveur est déjà occupé
+  (un serveur tourne déjà, ou un démarrage précédent ne s'est pas fermé), l'application le
+  détecte et propose de **libérer le port** au lieu de laisser le serveur planter
+  (`FAILED TO BIND TO PORT`).
+- Bouton **« Libérer le port »** (Étape 2) : arrête proprement le serveur en cours puis force
+  la libération du port, avec avertissement. `netinfo.port_in_use()` / `free_port()`.
+
 ## [0.4.0] — 2026-07-01
 Refonte de l'expérience + accès distant 100 % automatique.
 
